@@ -1,6 +1,6 @@
 # Waste Sorting Robot 3-DOF 🤖
 
-Automatic Waste Sorting Robot using **YOLOv11-Seg**, **ESP32**, **PLC Omron**, and **3-DOF Robotic Arm**.
+An intelligent automatic waste sorting robot that integrates YOLOv11-Seg for real-time object detection and segmentation, an ESP32-based motion controller, an Omron PLC for conveyor automation, and a custom 3-DOF robotic arm with a vacuum gripper for autonomous waste classification and pick-and-place operations..
 
 ---
 
