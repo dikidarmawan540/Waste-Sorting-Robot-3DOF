@@ -1,16 +1,16 @@
-# 🤖 Waste Sorting Robot 3-DOF
+# Waste Sorting Robot 3-DOF 🤖
 
 Automatic Waste Sorting Robot using **YOLOv11-Seg**, **ESP32**, **PLC Omron**, and **3-DOF Robotic Arm**.
 
 ---
 
-## 📸 The Entire System 
+## The Entire System 📸
 
 ![Robot](Rendering/Waste%20Sorting.png)
 
 ---
 
-## 🚀 Features
+## Features
 - YOLOv11 Instance Segmentation
 - 3-DOF Robot Arm
 - PLC Conveyor Control
@@ -18,7 +18,7 @@ Automatic Waste Sorting Robot using **YOLOv11-Seg**, **ESP32**, **PLC Omron**, a
 
 ---
 
-## 🛠 Hardware
+## Hardware
 
 - ESP32 DevKit V4
 - Omron CP1L PLC
@@ -29,7 +29,7 @@ Automatic Waste Sorting Robot using **YOLOv11-Seg**, **ESP32**, **PLC Omron**, a
 
 ---
 
-## 💻 Software
+## Software
 
 - Python
 - OpenCV
@@ -38,7 +38,7 @@ Automatic Waste Sorting Robot using **YOLOv11-Seg**, **ESP32**, **PLC Omron**, a
 
 ---
 
-## 📈 Performance
+## Performance
 
 | Metric | Value |
 |--------|--------|
