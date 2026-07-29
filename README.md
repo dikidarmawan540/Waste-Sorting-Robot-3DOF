@@ -6,7 +6,7 @@ Automatic Waste Sorting Robot using **YOLOv11-Seg**, **ESP32**, **PLC Omron**, a
 
 ## 📸 Robot
 
-![Robot](Rendering/Waste%10Sorting.png)
+![Robot](Rendering/Waste%20Sorting.png)
 
 ---
 
