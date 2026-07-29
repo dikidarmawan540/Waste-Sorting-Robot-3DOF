@@ -31,7 +31,7 @@ An intelligent automatic waste sorting robot that integrates YOLOv11-Seg for rea
 
 ## Schematic
 
-![Robot](Rendering/Waste%20Sorting.png)
+![Robot](Schematic/Schematic.png)
 
 ---
 
