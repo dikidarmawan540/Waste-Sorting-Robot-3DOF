@@ -1,16 +1,3 @@
-/*
-  WasteSorting.ino
-  ESP32 robotic arm waste sorting controller
-
-  Files:
-  - config.h     : pins, kinematic constants, homing, operation range, bins
-  - kineamtic.h  : inverse/forward kinematics, filename follows requested spelling
-  - motion.h     : AccelStepper movement + homing
-  - pump.h       : suction relay
-  - INA219.h     : INA219 current sensor with linear regression calibration
-  - command.h    : Serial command interface
-*/
-
 #include <Arduino.h>
 #include <Wire.h>
 
