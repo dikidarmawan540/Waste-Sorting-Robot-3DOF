@@ -34,7 +34,7 @@ public:
     configureLimitPin(J2_LIMIT_PIN);
     configureLimitPin(J3_LIMIT_PIN);
 
-    // Estimasi internal saat baru boot. Status tetap belum homing.
+    // Internal estimate right after boot; homing status is still false.
     _j1.setCurrentPosition(degToSteps(1, BOOT_J1_DEG));
     _j2.setCurrentPosition(degToSteps(2, BOOT_J2_DEG));
     _j3.setCurrentPosition(degToSteps(3, BOOT_J3_DEG));
@@ -111,8 +111,7 @@ public:
   bool moveToJointAngles(const JointPose& target, Stream& out, bool blocking = true) {
     if (!targetInRange(target, out)) return false;
 
-    // G0/MOVEJ selalu rapid: pastikan speed/accel full config, bukan sisa
-    // hasil skala sinkronisasi dari G1 linear sebelumnya.
+    // G0/MOVEJ is always rapid: force full config speed/accel instead of leftover sync scaling from a previous linear G1.
     restoreAllNormalSpeeds();
 
     _j1.moveTo(degToSteps(1, target.j1));
@@ -154,15 +153,7 @@ public:
     const float dz = target.z - start.z;
     const float distance = sqrtf((dx * dx) + (dy * dy) + (dz * dz));
 
-    // Segmentasi berbasis SUDUT sendi yang berubah, bukan jarak Cartesian.
-    // Deviasi chord-vs-arc (seberapa jauh X/Y/Z "meleset" di antara waypoint)
-    // ditentukan oleh besar sudut per segmen, bukan oleh jarak mm. Contoh: G1
-    // Z murni bisa berjarak >100mm padahal sudut J2/J3 yang berubah kecil
-    // -> kalau segmentasi dipaksa ikut jarak mm, kita bikin puluhan segmen
-    // super pendek (cuma belasan step) yang bikin motor terus-menerus
-    // rem/gas tiap segmen -> lambat & kurang mulus. Dengan basis sudut,
-    // jumlah segmen otomatis menyesuaikan seberapa "melengkung" gerakan itu
-    // sebenarnya perlu didekati.
+    // Segmentation is based on joint ANGLE change rather than Cartesian distance, since chord-vs-arc deviation between waypoints depends on angle per segment, not mm distance (e.g. a pure Z move can span >100mm with a small J2/J3 change; distance-based segmentation would create many tiny, jerky segments).
     KinematicResult ikEnd = kinematic.inverse(target);
     if (!ikEnd.ok) {
       out.print(F("IK ERROR: "));
@@ -179,8 +170,7 @@ public:
 
     const int segmentsByAngle = static_cast<int>(ceilf(maxJointDeltaDeg / DEG_PER_CARTESIAN_SEGMENT));
     const int segmentsByDistance = static_cast<int>(ceilf(distance * SEGMENTS_PER_MM));
-    // Pakai basis sudut sebagai penggerak utama, jarak cuma jadi lantai
-    // ringan (jaga-jaga untuk gerakan lurus tapi sudutnya kebetulan kecil).
+    // Angle basis drives the segment count; distance is only a light floor for straight moves with a small angle change.
     int segments = (segmentsByAngle > segmentsByDistance) ? segmentsByAngle : segmentsByDistance;
     if (segments < MIN_CARTESIAN_SEGMENTS) segments = MIN_CARTESIAN_SEGMENTS;
     if (segments > MAX_CARTESIAN_SEGMENTS) segments = MAX_CARTESIAN_SEGMENTS;
@@ -199,11 +189,7 @@ public:
     JointStepTarget stepTargets[MAX_CARTESIAN_SEGMENTS];
 
     for (int i = 1; i <= segments; i++) {
-      // REVISI: segmen terakhir (i == segments) memakai koordinat target
-      // ASLI (bukan start + dz*t) supaya tidak ada drift floating-point.
-      // Interpolasi start+dz*t seharusnya sama dengan target di t=1, tapi
-      // akumulasi pembulatan float bisa membuatnya meleset ~0.0001mm --
-      // cukup untuk gagal validasi kalau target persis di batas Z_MIN/MAX.
+      // The last segment (i == segments) uses the exact target coordinates instead of start + dz*t, to avoid floating-point drift failing validation when the target sits exactly on a boundary.
       CartesianPose stepTarget;
       if (i == segments) {
         stepTarget = target;
@@ -259,32 +245,7 @@ public:
     return true;
   }
 
-  // REVISI: pengganti loop "turun 2mm -> stop total -> baca INA -> ulangi"
-  // di command.h::probePickDown(). Di sini robot turun dalam SATU gerakan
-  // linear kontinu menuju zMin (X/Y tetap), dan arus INA219 dipantau tiap
-  // sampleIntervalMs TANPA memberhentikan motor (tidak ada delay() di sini,
-  // hanya cek millis()). Begitu arus >= overloadThresholdA dan sudah turun
-  // afterTouchOffsetMm tambahan, motor direm halus (AccelStepper::stop(),
-  // masih pakai profil accel J2/J3 yang sudah di-tuning) baru berhenti.
-  //
-  // Ini menghilangkan puluhan siklus accel/decel penuh yang sebelumnya
-  // membuat MAX_SPEED G1 tidak pernah tercapai (gerak tiap step terlalu
-  // pendek untuk keluar dari fase akselerasi) -- itulah sumber "Z pick down
-  // lambat" meski G1 sudah dituning.
-  // REVISI-4: sebelumnya fungsi ini pakai SATU commandStepTarget() untuk
-  // seluruh jarak turun (safe Z -> zMin sekaligus). Itu membuat motor
-  // akselerasi sekali lalu cruise di MAX_SPEED penuh untuk seluruh ~145mm
-  // TANPA jeda -- beda dengan perintah manual "G1 Z.." yang lewat
-  // moveToCartesianLinear(): disegmentasi tiap DEG_PER_CARTESIAN_SEGMENT
-  // dengan blending antar-segmen. Sama-sama pakai config G1 yang sama, tapi
-  // arsitektur eksekusinya beda -> kerasa lebih cepat/kurang terkendali.
-  //
-  // Sekarang descend memakai SEGMENTASI + BLENDING YANG SAMA PERSIS dengan
-  // moveToCartesianLinear (baca komentar di fungsi itu untuk detail kenapa
-  // basis sudut dipakai), supaya "Z pick down" = "G1 manual" secara gerak.
-  // Arus INA219 dipantau tiap sampleIntervalMs di sela-sela loop blending.
-  // Tidak ada rising-edge, blind-zone, atau debounce: 1 sampel arus
-  // terkalibrasi regresi linear >= threshold langsung dianggap deteksi.
+  // Continuous Z pick-down descent with non-blocking INA219 current monitoring: the arm moves in one linear motion toward zMin while current is sampled every sampleIntervalMs (no delay()); once current >= overloadThresholdA and afterTouchOffsetMm of extra descent is met, the motor decelerates smoothly via AccelStepper::stop(). This replaced a "step 2mm -> full stop -> read INA -> repeat" loop that prevented G1 speed from ever reaching MAX_SPEED. Descent uses the same angle-based segmentation and blending as moveToCartesianLinear() (see comments there) so "Z pick down" moves identically to a manual G1; there is no rising-edge/blind-zone/debounce logic in this variant besides the calibrated threshold check.
   bool descendWithCurrentMonitor(const CartesianPose& pick,
                                   float zMin,
                                   float overloadThresholdA,
@@ -321,8 +282,7 @@ public:
     }
 
     if (!useG1Sync) {
-      // Gaya G0: satu gerakan langsung, tiap sendi independen di
-      // MAX_SPEED/ACCEL config-nya masing-masing (sama seperti G0/MOVEJ).
+      // G0 style: a single direct move, each joint independent at its own MAX_SPEED/ACCEL config (same as G0/MOVEJ).
       restoreAllNormalSpeeds();
       _j1.moveTo(degToSteps(1, ikEnd.joints.j1));
       _j2.moveTo(degToSteps(2, ikEnd.joints.j2));
@@ -334,7 +294,7 @@ public:
                                     outFinalZ, outFinalCurrentA, outCurrentDetected, outOffsetSatisfied);
     }
 
-    // Gaya G1: segmentasi berbasis sudut, identik dengan moveToCartesianLinear().
+    // G1 style: angle-based segmentation identical to moveToCartesianLinear().
     const float dx = target.x - start.x;
     const float dy = target.y - start.y;
     const float dz = target.z - start.z;
@@ -358,11 +318,7 @@ public:
 
     JointStepTarget stepTargets[MAX_CARTESIAN_SEGMENTS];
     for (int i = 1; i <= segments; i++) {
-      // REVISI: sama seperti moveToCartesianLinear() -- segmen terakhir
-      // (biasanya persis di zMin/Z_MIN_MM) memakai koordinat target ASLI
-      // supaya tidak gagal validasi hanya karena drift floating-point dari
-      // akumulasi start + dz*t. Ini akar penyebab "IK ERROR at segment
-      // N/N: Z out of range" saat probe turun ke batas Z persis.
+      // Same as moveToCartesianLinear(): the last segment (usually exactly at zMin/Z_MIN_MM) uses the exact target coordinates to avoid floating-point drift causing an "IK ERROR ... Z out of range" at the boundary.
       CartesianPose stepTarget;
       if (i == segments) {
         stepTarget = target;
@@ -451,23 +407,7 @@ private:
     };
   }
 
-  // Coordinated move: sebelum moveTo(), skalakan maxSpeed/accel tiap sendi
-  // proporsional terhadap jarak (steps) sendi itu dibanding sendi yang
-  // menempuh jarak PALING JAUH pada segmen ini ("dominant axis").
-  //
-  // Kenapa ini yang bikin G1 lebih LURUS: kalau J2/J3 dibiarkan jalan di
-  // maxSpeed config masing-masing (independen), sendi yang jaraknya lebih
-  // pendek akan sampai duluan lalu diam, sementara sendi lain masih
-  // bergerak -> lintasan antar-segmen melengkung, terlihat jelas pada G1
-  // yang hanya mengubah Z (J1 diam, J2/J3 jarang punya rasio jarak sama).
-  // Dengan skala proporsional ini, waktu tempuh trapezoid tiap sendi jadi
-  // identik (matematis: t_accel dan t_total tidak berubah karena speed &
-  // accel diskalakan dengan rasio yang sama), jadi ketiganya start/stop
-  // bersamaan -> path jadi garis lurus di ruang Cartesian.
-  //
-  // Kenapa tidak lebih LAMBAT: sendi dominan (jarak terjauh) rasionya = 1,
-  // jadi tetap dijalankan di kecepatan penuh seperti sebelumnya. Total
-  // waktu segmen tetap ditentukan oleh sendi dominan itu.
+  // Coordinated move: before moveTo(), each joint's maxSpeed/accel is scaled proportionally to its step distance relative to the dominant (longest-travel) axis in this segment, so all joints start/stop together and the path stays straight in Cartesian space; the dominant axis keeps ratio=1 so total segment time is unchanged.
   void commandStepTarget(const JointStepTarget& target) {
     const long d1 = target.j1 - _j1.currentPosition();
     const long d2 = target.j2 - _j2.currentPosition();
@@ -488,8 +428,7 @@ private:
   void applySyncedSpeed(AccelStepper& stepper, long axisDelta, long dominantDelta, float fullSpeed, float fullAccel) {
     float ratio = static_cast<float>(labs(axisDelta)) / static_cast<float>(dominantDelta);
     if (ratio > 1.0f) ratio = 1.0f;
-    // Floor kecil supaya AccelStepper tidak diberi speed persis 0 saat axis
-    // ini tetap harus menempuh beberapa step (mencegah stuck di speed=0).
+    // Small floor so AccelStepper is never given exactly speed=0 while this axis still needs to move.
     if (ratio < 0.02f && axisDelta != 0) ratio = 0.02f;
 
     stepper.setMaxSpeed(fullSpeed * ratio);
@@ -502,9 +441,7 @@ private:
     restoreNormalSpeed(3, _j3);
   }
 
-  // Monitor arus non-blocking untuk gaya G0 (satu gerakan langsung, sudah
-  // di-moveTo() oleh pemanggil). Tidak ada rising-edge, blind-zone, atau
-  // debounce: 1 sampel calibratedCurrentA() >= threshold langsung valid.
+  // Non-blocking current monitor for G0 style (single direct move already issued by the caller); one calibrated current sample >= threshold is immediately treated as valid, no rising-edge/blind-zone/debounce.
   bool runDescendMonitorLoop(float zMin, float overloadThresholdA, float afterTouchOffsetMm,
                               float sampleIntervalMs, const RobotKinematic& kinematic,
                               INA219Monitor& ina, Stream& out,
@@ -531,8 +468,7 @@ private:
         const CartesianPose nowPose = kinematic.forward(currentJointPose());
         outFinalZ = nowPose.z;
 
-        // Blind-time: abaikan sample selama fase akselerasi awal supaya
-        // lonjakan arus start-up tidak dihitung sebagai sentuhan objek.
+        // Blind time: ignore samples during the initial acceleration phase so the start-up current spike isn't read as object contact.
         const bool pastBlindTime = (now - startMs) >= PICK_TOUCH_BLIND_TIME_MS;
 
         if (!outCurrentDetected && ina.isReady() && pastBlindTime) {
@@ -545,23 +481,7 @@ private:
 
         if (!outCurrentDetected && consecutiveOverThreshold >= PICK_TOUCH_DEBOUNCE_SAMPLES) {
           outCurrentDetected = true;
-          // Syarat stop tetap LOGIC AND:
-          // 1) arus INA >= threshold, dan
-          // 2) Z sudah turun sebesar afterTouchOffsetMm dari titik deteksi
-          //    (atau sudah mentok di lantai mekanis zMin, mana yang lebih
-          //    dulu tercapai).
-          //
-          // REVISI-5 (fix "tidak pernah pindah ke bin"): offsetTargetZ SEKARANG
-          // di-clamp ke zMin. Sebelumnya offsetTargetZ TIDAK di-clamp, sehingga
-          // kalau arus 0.9A baru terdeteksi saat Z sudah dekat zMin (< zMin +
-          // afterTouchOffsetMm), offsetTargetZ jatuh DI BAWAH zMin -- padahal
-          // gerak descend memang di-hard-limit berhenti paling jauh di zMin.
-          // Akibatnya syarat "Z <= offsetTargetZ" MUSTAHIL tercapai secara
-          // fisik, outOffsetSatisfied selalu false, dan sortSequence() selalu
-          // abort (EVENT:SORT_ABORT_OFFSET_NOT_MET) walau lengan sudah turun
-          // penuh sampai lantai. Dengan clamp ini, begitu lengan mencapai
-          // zMin DAN arus sudah >= threshold, syarat AND dianggap terpenuhi
-          // (menekan objek semaksimal yang diizinkan hard limit).
+          // Stop condition is a logical AND of (1) INA current >= threshold and (2) Z has descended afterTouchOffsetMm past the detection point, whichever the physical zMin floor reaches first. offsetTargetZ is clamped to zMin so that a late detection near the floor can't push the target below the hard limit (which would make the AND condition physically unreachable and abort every sort).
           offsetTargetZ = nowPose.z - afterTouchOffsetMm;
           if (offsetTargetZ < zMin) {
             offsetTargetZ = zMin;
@@ -599,9 +519,7 @@ private:
     return true;
   }
 
-  // Monitor arus non-blocking untuk gaya G1: menjalankan segmen + blending
-  // PERSIS seperti runStepTargetsBlended(), ditambah sampling INA219 di
-  // sela-sela loop tanpa menghentikan motor. Tidak ada debounce/rising-edge.
+  // Non-blocking current monitor for G1 style: runs segments + blending exactly like runStepTargetsBlended(), plus INA219 sampling interleaved in the loop without stopping the motor; no debounce/rising-edge here.
   bool runDescendBlendedWithMonitor(const JointStepTarget* targets, int count,
                                      float zMin,
                                      float overloadThresholdA, float afterTouchOffsetMm,
@@ -615,7 +533,7 @@ private:
     int active = 0;
     commandStepTarget(targets[active]);
 
-    float offsetTargetZ = -1.0e9f;  // belum valid sampai touch terdeteksi
+    float offsetTargetZ = -1.0e9f;  // not valid until touch is detected
     int consecutiveOverThreshold = 0;
 
     uint32_t lastSampleMs = millis();
@@ -653,8 +571,7 @@ private:
         const CartesianPose nowPose = kinematic.forward(currentJointPose());
         outFinalZ = nowPose.z;
 
-        // Blind-time: abaikan sample selama fase akselerasi awal supaya
-        // lonjakan arus start-up tidak dihitung sebagai sentuhan objek.
+        // Blind time: ignore samples during the initial acceleration phase so the start-up current spike isn't read as object contact.
         const bool pastBlindTime = (now - startMs) >= PICK_TOUCH_BLIND_TIME_MS;
 
         if (!outCurrentDetected && ina.isReady() && pastBlindTime) {
@@ -667,13 +584,7 @@ private:
 
         if (!outCurrentDetected && consecutiveOverThreshold >= PICK_TOUCH_DEBOUNCE_SAMPLES) {
           outCurrentDetected = true;
-          // REVISI-5: clamp offsetTargetZ ke zMin (lihat penjelasan lengkap di
-          // runDescendMonitorLoop()). Tanpa clamp ini, deteksi arus yang
-          // terjadi mendekati lantai (Z < zMin + afterTouchOffsetMm) membuat
-          // offsetTargetZ jatuh di bawah zMin -- target yang mustahil dicapai
-          // karena gerak descend memang di-hard-limit berhenti di zMin -- dan
-          // outOffsetSatisfied tidak akan pernah true, sehingga sortSequence()
-          // selalu abort dan robot tidak pernah pindah ke bin.
+          // offsetTargetZ is clamped to zMin (see runDescendMonitorLoop() for the full rationale): without this, a detection near the floor would push the target below the hard-limited zMin, making outOffsetSatisfied permanently unreachable and aborting every sort.
           offsetTargetZ = nowPose.z - afterTouchOffsetMm;
           if (offsetTargetZ < zMin) {
             offsetTargetZ = zMin;
@@ -713,16 +624,14 @@ private:
 
     if (!outCurrentDetected) {
       out.println(F("EVENT:PICK_TOUCH_NOT_DETECTED (reached final segment)"));
-      out.println(F("WARNING: INA threshold tidak terdeteksi; Z tetap dibatasi minimum."));
+      out.println(F("WARNING: INA threshold not detected; Z remained limited to the minimum."));
     } else if (!outOffsetSatisfied) {
-      // Dengan clamp REVISI-5, cabang ini seharusnya hanya kejadian kalau
-      // motor berhenti/timeout SEBELUM benar-benar mencapai offsetTargetZ
-      // (mis. gangguan mekanis), bukan lagi karena target di bawah zMin.
+      // With the zMin clamp, this branch should only happen if the motor stopped/timed out before actually reaching offsetTargetZ (e.g. a mechanical obstruction), not because the target fell below zMin.
       out.print(F("EVENT:PICK_OFFSET_NOT_FULL reached_z="));
       out.print(outFinalZ, 2);
       out.print(F(" target_z="));
       out.println(offsetTargetZ, 2);
-      out.println(F("WARNING: Lengan berhenti sebelum offsetTargetZ tercapai."));
+      out.println(F("WARNING: arm stopped before reaching offsetTargetZ."));
     }
 
     return true;
@@ -736,16 +645,14 @@ private:
     if (!outCurrentDetected) {
       out.print(F("EVENT:PICK_TOUCH_NOT_DETECTED reached_zmin="));
       out.println(zMin, 2);
-      out.println(F("WARNING: INA threshold tidak terdeteksi; Z tetap dibatasi minimum."));
+      out.println(F("WARNING: INA threshold not detected; Z remained limited to the minimum."));
     } else if (!outOffsetSatisfied) {
-      // Dengan clamp REVISI-5, cabang ini seharusnya hanya kejadian kalau
-      // motor berhenti/timeout SEBELUM benar-benar mencapai offsetTargetZ
-      // (mis. gangguan mekanis), bukan lagi karena target di bawah zMin.
+      // With the zMin clamp, this branch should only happen if the motor stopped/timed out before actually reaching offsetTargetZ (e.g. a mechanical obstruction), not because the target fell below zMin.
       out.print(F("EVENT:PICK_OFFSET_NOT_FULL reached_z="));
       out.print(outFinalZ, 2);
       out.print(F(" target_z="));
       out.println(offsetTargetZ, 2);
-      out.println(F("WARNING: Lengan berhenti sebelum offsetTargetZ tercapai."));
+      out.println(F("WARNING: arm stopped before reaching offsetTargetZ."));
     }
   }
 
@@ -772,7 +679,7 @@ private:
     if (window < MOTION_BLEND_MIN_WINDOW_STEPS) window = MOTION_BLEND_MIN_WINDOW_STEPS;
     if (window > MOTION_BLEND_MAX_WINDOW_STEPS) window = MOTION_BLEND_MAX_WINDOW_STEPS;
 
-    // Jangan sampai target segmen berikutnya masuk terlalu awal pada segmen pendek.
+    // Don't let the next segment's target kick in too early on a short segment.
     const long maxAllowed = maxSegmentDelta - 2;
     if (window > maxAllowed) window = maxAllowed;
     if (window < 0) window = 0;
@@ -795,8 +702,7 @@ private:
         const long segmentDelta = maxSegmentDeltaAbs(segmentStart, targets[active]);
         const long blendWindow = blendWindowForSegment(segmentDelta);
 
-        // Blending: sebelum segmen aktif berhenti total, target berikutnya sudah diberikan.
-        // Ini mengurangi efek stop-start pada G1 segmented.
+        // Blending: the next target is issued before the active segment fully stops, reducing the stop-start effect of segmented G1.
         if (blendWindow > 0 && maxDistanceToGoAbs() <= blendWindow) {
           segmentStart = targets[active];
           active++;
@@ -962,7 +868,7 @@ private:
       out.println(F(" already on limit, applying offset directly."));
     }
 
-    // Titik limit switch dianggap raw zero.
+    // The limit switch point is treated as raw zero.
     stepper.setCurrentPosition(0);
 
     if (HOMING_BACKOFF_STEPS > 0) {
@@ -981,7 +887,7 @@ private:
       rawStepCount(stepPin, dirPin, offsetDirLevel, offsetSteps, limitPin, false, out, F("home offset"));
     }
 
-    // Setelah offset, posisi fisik ini dianggap kinematic home angle.
+    // After the offset, this physical position is treated as the kinematic home angle.
     stepper.setCurrentPosition(0);
     restoreNormalSpeed(axis, stepper);
 
