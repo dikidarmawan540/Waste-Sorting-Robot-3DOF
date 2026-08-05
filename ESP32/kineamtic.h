@@ -1,31 +1,9 @@
 #pragma once
 
-/*
-  kineamtic.h
-  Nama file sengaja mengikuti permintaan awal: kineamtic.h.
-
-  Konvensi koordinat:
-  - X/Y/Z adalah koordinat Cartesian dalam milimeter.
-  - Origin X/Y berada di pusat rotasi base.
-  - Z = 0 mengikuti referensi poros shoulder/J2 sesuai guide.
-  - +Y = depan robot.
-  - -Y = belakang robot, dipakai untuk bin/tempat sampah.
-  - +X = kanan robot dari top view.
-  - +Z = atas.
-
-  Konvensi sudut joint revisi:
-  - J1 = 0 derajat menghadap +Y/depan.
-  - J1 = +90 derajat menghadap +X/kanan.
-  - J1 = +/-180 derajat menghadap -Y/belakang.
-  - J2 adalah sudut lower shank terhadap bidang horizontal/radial.
-    J2 = 90 derajat berarti lower shank vertikal.
-  - J3 adalah sudut absolut high shank terhadap bidang horizontal/radial.
-    J3 = 0 derajat berarti high shank horizontal ke depan.
-
-  Dengan konvensi ini, pose home 90 derajat adalah:
-  J1=0, J2=90, J3=0
-  sehingga lower shank vertikal dan high shank horizontal.
-*/
+// kineamtic.h (filename intentionally kept as originally requested: kineamtic.h)
+// Coordinates: X/Y/Z in mm, X/Y origin at the base rotation center, Z=0 at the shoulder/J2 axis per the guide. +Y=front, -Y=back (bin direction), +X=right (top view), +Z=up.
+// Joint angles: J1=0 faces +Y/front, J1=+90 faces +X/right, J1=+/-180 faces -Y/back. J2=lower shank angle vs horizontal (90=vertical). J3=absolute high shank angle vs horizontal (0=horizontal forward).
+// 90-degree home pose: J1=0, J2=90, J3=0 (lower shank vertical, high shank horizontal).
 
 #include <Arduino.h>
 #include <math.h>
@@ -71,11 +49,7 @@ public:
     return deg;
   }
 
-  // Toleransi kecil untuk menyerap error pembulatan floating-point saat
-  // target berada TEPAT di batas (Z_MIN_MM/Z_MAX_MM/dll). Tanpa ini,
-  // segmen G1 terakhir yang menuju batas persis (mis. probe turun sampai
-  // Z_MIN_MM) bisa gagal validasi hanya karena selisih 0.0001mm hasil
-  // akumulasi start + dz*t, padahal target itu sendiri valid.
+  // Small tolerance to absorb floating-point rounding error when the target is exactly at a boundary (Z_MIN_MM/Z_MAX_MM/etc.)
   static constexpr float BOUNDARY_EPSILON = 0.01f;
 
   static bool isWithin(float value, float low, float high) {
@@ -88,7 +62,7 @@ public:
     result.joints = {0.0f, 0.0f, 0.0f};
     result.message[0] = '\0';
 
-    // R adalah jarak horizontal target dari poros base.
+    // R is the horizontal distance from the target to the base axis.
     const float r = sqrtf((target.x * target.x) + (target.y * target.y));
 
     if (r < (R_MIN_MM - BOUNDARY_EPSILON) || r > (R_MAX_MM + BOUNDARY_EPSILON)) {
@@ -101,14 +75,11 @@ public:
       return result;
     }
 
-    // Sudut base.
-    // atan2(X,Y) dipakai agar 0 derajat menghadap +Y/depan, bukan +X.
+    // Base angle; atan2(X,Y) is used so 0 degrees faces +Y/front instead of +X.
     float j1 = radToDeg(atan2f(target.x, target.y));
     j1 = normalizeDeg180(j1);
 
-    // Hanya jaga nilai tepat +/-180 (kasus tie-breaking atan2/normalize), JANGAN
-    // clamp ke J1_MIN/MAX_DEG di sini -- kalau di-clamp duluan, pengecekan
-    // isWithin() di bawah jadi tidak pernah bisa mendeteksi out-of-range.
+    // Keep values exactly at +/-180 (atan2/normalize tie-breaking) without clamping to J1_MIN/MAX_DEG here, so isWithin() can still detect out-of-range.
     if (j1 >= 179.999f) j1 = 179.999f;
     if (j1 <= -179.999f) j1 = -179.999f;
 
@@ -117,9 +88,7 @@ public:
       return result;
     }
 
-    // Inverse kinematic 2-link pada bidang radial-Z.
-    // Titik target suction cup dikurangi END_EFFECTOR_OFFSET agar menjadi titik wrist.
-    // Karena Z=0 mengikuti shoulder guide, SHOULDER_Z_OFFSET_MM normalnya 0.
+    // 2-link inverse kinematics on the radial-Z plane; the suction cup target point minus END_EFFECTOR_OFFSET gives the wrist point (SHOULDER_Z_OFFSET_MM is normally 0 since Z=0 is at the shoulder).
     const float wristR = r - END_EFFECTOR_OFFSET_MM;
     const float wristZ = target.z - SHOULDER_Z_OFFSET_MM;
 
@@ -141,18 +110,14 @@ public:
     float cosElbow = (d2 - (L1 * L1) - (L2 * L2)) / (2.0f * L1 * L2);
     cosElbow = clampFloat(cosElbow, -1.0f, 1.0f);
 
-    // Hitung sudut relatif elbow lebih dulu.
-    // Cabang negatif dipilih supaya pose HOME_90 menghasilkan:
-    //   J2 = 90 derajat
-    //   J3 absolut = 0 derajat
+    // The negative elbow branch is chosen so the HOME_90 pose yields J2=90 degrees and absolute J3=0 degrees.
     const float elbowRelativeRad = -acosf(cosElbow);
 
     const float j2Rad = atan2f(wristZ, wristR)
                       - atan2f(L2 * sinf(elbowRelativeRad),
                                L1 + (L2 * cosf(elbowRelativeRad)));
 
-    // J3 pada firmware ini adalah sudut absolut high shank terhadap horizontal,
-    // bukan sudut relatif terhadap lower shank.
+    // J3 in this firmware is the absolute high shank angle relative to horizontal, not the angle relative to the lower shank.
     const float j3AbsRad = j2Rad + elbowRelativeRad;
 
     const float j2 = radToDeg(j2Rad);
@@ -182,15 +147,12 @@ public:
     const float j2Rad = degToRad(joints.j2);
     const float j3Rad = degToRad(joints.j3);
 
-    // Posisi wrist pada bidang radial-Z.
-    // J2 = sudut absolut lower shank terhadap horizontal.
-    // J3 = sudut absolut high shank terhadap horizontal.
+    // Wrist position on the radial-Z plane; J2 = absolute lower shank angle vs horizontal, J3 = absolute high shank angle vs horizontal.
     const float wristR = (L1 * cosf(j2Rad)) + (L2 * cosf(j3Rad));
     const float z = SHOULDER_Z_OFFSET_MM + (L1 * sinf(j2Rad)) + (L2 * sinf(j3Rad));
     const float r = wristR + END_EFFECTOR_OFFSET_MM;
 
-    // Kebalikan dari atan2(X,Y):
-    // X = r*sin(J1), Y = r*cos(J1).
+    // Inverse of atan2(X,Y): X = r*sin(J1), Y = r*cos(J1).
     const float x = r * sinf(j1Rad);
     const float y = r * cosf(j1Rad);
 
